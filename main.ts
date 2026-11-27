@@ -1,42 +1,107 @@
-// News image for Friday 27 November 2026 (make.fun news-image-20261127).
-// A single self-contained Node 22 program, standard library only. It draws a
-// 1024 x 1024 newspaper front page in memory and writes it, deterministically,
-// to /output/entry.png (or $MAKEFUN_OUTPUT_DIR/entry.png outside the grader).
-// No network, no files read, no timestamps: two runs write identical bytes.
-// Every story below was checked against news reported on 27 November 2026:
-// the tanker explosions in the Strait of Hormuz, the diesel tanker sunk off
-// Ibiza, the Russian strikes on Ukraine, the Gaza strikes, the Thanksgiving
-// storm on the US East Coast and the million-satellite SpaceX approval, with
-// the Colombia siege, UK migration and the EU Ukraine loan as briefs in the
-// footer.
+// news-image-20261127 — one image summing up Friday 27 November 2026.
+// A self-contained Node 22 program using only the standard library. It
+// paints a 1024x1024 newspaper front page into an in-memory framebuffer and
+// writes it as a PNG to $MAKEFUN_OUTPUT_DIR/entry.png (or /output/entry.png
+// in the grader). No network, no input files, no clock: the same bytes come
+// out every run. The picture is drawn with a hand-made 5x7 pixel font and a
+// small hand-rolled PNG encoder, so nothing outside this file is needed.
+//
+// The six stories are the day's news as reported on 27 November 2026:
+// explosions on tankers in the Strait of Hormuz, a diesel tanker sunk off
+// Ibiza, Russian strikes on Ukraine, Israeli strikes in Gaza, the
+// Thanksgiving storm on the US East Coast, and the US approval of a
+// million-satellite SpaceX plan. Three more briefs sit in the footer.
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { deflateSync } from 'node:zlib';
 
-const W = 1024;
-const H = 1024;
+const WIDTH = 1024;
+const HEIGHT = 1024;
 
-// ---- palette: newsprint paper, navy masthead, ink text, one accent per beat
-const PAPER = [247, 243, 232];
-const WHITE = [255, 255, 255];
-const INK = [20, 24, 31];
-const GREY = [74, 82, 94];
-const NAVY = [15, 42, 74];
-const NAVY_LIGHT = [28, 68, 110];
-const RED = [178, 34, 24];
-const GOLD = [196, 141, 32];
-const TEAL = [16, 110, 102];
-const PLUM = [110, 44, 92];
-const RUST = [176, 84, 24];
-const SLATE = [58, 84, 110];
-const LINE = [203, 196, 180];
-
+// ---------------------------------------------------------------- palette
+// Newsprint paper, a navy masthead, dark ink, and one accent per story.
 type RGB = [number, number, number];
+const PAPER: RGB = [247, 243, 232];
+const WHITE: RGB = [255, 255, 255];
+const INK: RGB = [20, 24, 31];
+const GREY: RGB = [74, 82, 94];
+const NAVY: RGB = [15, 42, 74];
+const NAVY2: RGB = [28, 68, 110];
+const RED: RGB = [178, 34, 24];
+const GOLD: RGB = [196, 141, 32];
+const TEAL: RGB = [16, 110, 102];
+const PLUM: RGB = [110, 44, 92];
+const RUST: RGB = [176, 84, 24];
+const RULE: RGB = [203, 196, 180];
 
-// ---- 5x7 bitmap font, uppercase only. Each glyph is 7 rows of 5 bits,
-// written as five characters of "1" (ink) and "0" (blank), top row first.
-const FONT: Record<string, string[]> = {
+// ------------------------------------------------------- framebuffer paint
+// One RGB byte array, origin at the top left, x grows right, y grows down.
+const fb = new Uint8Array(WIDTH * HEIGHT * 3);
+
+function put(x: number, y: number, c: RGB): void {
+  if (x < 0 || y < 0 || x >= WIDTH || y >= HEIGHT) return;
+  const i = (y * WIDTH + x) * 3;
+  fb[i] = c[0];
+  fb[i + 1] = c[1];
+  fb[i + 2] = c[2];
+}
+
+function rect(x: number, y: number, w: number, h: number, c: RGB): void {
+  for (let yy = y; yy < y + h; yy++) {
+    for (let xx = x; xx < x + w; xx++) put(xx, yy, c);
+  }
+}
+
+function disc(cx: number, cy: number, r: number, c: RGB): void {
+  for (let y = cy - r; y <= cy + r; y++) {
+    for (let x = cx - r; x <= cx + r; x++) {
+      const dx = x - cx;
+      const dy = y - cy;
+      if (dx * dx + dy * dy <= r * r) put(x, y, c);
+    }
+  }
+}
+
+function outline(cx: number, cy: number, r: number, t: number, c: RGB): void {
+  for (let y = cy - r - t; y <= cy + r + t; y++) {
+    for (let x = cx - r - t; x <= cx + r + t; x++) {
+      const d = Math.sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy));
+      if (d >= r - t / 2 && d <= r + t / 2) put(x, y, c);
+    }
+  }
+}
+
+// Filled triangle: for each scanline, intersect the three edges and fill
+// the span between the leftmost and rightmost crossings.
+function tri(ax: number, ay: number, bx: number, by: number,
+            cx: number, cy: number, c: RGB): void {
+  const top = Math.min(ay, by, cy);
+  const bottom = Math.max(ay, by, cy);
+  const edges: Array<[number, number, number, number]> = [
+    [ax, ay, bx, by],
+    [bx, by, cx, cy],
+    [cx, cy, ax, ay],
+  ];
+  for (let y = top; y <= bottom; y++) {
+    const hits: number[] = [];
+    for (const [x1, y1, x2, y2] of edges) {
+      if ((y1 <= y && y < y2) || (y2 <= y && y < y1)) {
+        hits.push(x1 + ((y - y1) * (x2 - x1)) / (y2 - y1));
+      }
+    }
+    if (hits.length >= 2) {
+      const lo = Math.ceil(Math.min(...hits));
+      const hi = Math.floor(Math.max(...hits));
+      for (let x = lo; x <= hi; x++) put(x, y, c);
+    }
+  }
+}
+
+// ------------------------------------------------------------- 5x7 bitmap font
+// Uppercase only. Each glyph is seven rows of five bits, '1' for ink and
+// '0' for blank, top row first. Digits and common punctuation included.
+const GLYPHS: Record<string, string[]> = {
   A: ['01110', '10001', '10001', '11111', '10001', '10001', '10001'],
   B: ['11110', '10001', '10001', '11110', '10001', '10001', '11110'],
   C: ['01110', '10001', '10000', '10000', '10000', '10001', '01110'],
@@ -91,133 +156,112 @@ const FONT: Record<string, string[]> = {
   '=': ['00000', '00000', '11111', '00000', '11111', '00000', '00000'],
 };
 
-// ---- canvas: a plain RGB byte array, origin top-left
-const px = new Uint8Array(W * H * 3);
-function setPixel(x: number, y: number, c: RGB): void {
-  if (x < 0 || y < 0 || x >= W || y >= H) return;
-  const i = (y * W + x) * 3;
-  px[i] = c[0]; px[i + 1] = c[1]; px[i + 2] = c[2];
-}
-function fillRect(x: number, y: number, w: number, h: number, c: RGB): void {
-  for (let yy = y; yy < y + h; yy++) {
-    for (let xx = x; xx < x + w; xx++) setPixel(xx, yy, c);
-  }
-}
-function fillCircle(cx: number, cy: number, r: number, c: RGB): void {
-  for (let y = cy - r; y <= cy + r; y++) {
-    for (let x = cx - r; x <= cx + r; x++) {
-      if ((x - cx) * (x - cx) + (y - cy) * (y - cy) <= r * r) setPixel(x, y, c);
-    }
-  }
-}
-function ring(cx: number, cy: number, r: number, t: number, c: RGB): void {
-  for (let y = cy - r - t; y <= cy + r + t; y++) {
-    for (let x = cx - r - t; x <= cx + r + t; x++) {
-      const d = Math.sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy));
-      if (d >= r - t / 2 && d <= r + t / 2) setPixel(x, y, c);
-    }
-  }
-}
-// Filled triangle by scanline interpolation between its three edges.
-function fillTriangle(ax: number, ay: number, bx: number, by: number, cx: number, cy: number, c: RGB): void {
-  const minY = Math.min(ay, by, cy);
-  const maxY = Math.max(ay, by, cy);
-  for (let y = minY; y <= maxY; y++) {
-    const xs: number[] = [];
-    const edges: Array<[number, number, number, number]> = [[ax, ay, bx, by], [bx, by, cx, cy], [cx, cy, ax, ay]];
-    for (const [x1, y1, x2, y2] of edges) {
-      if ((y1 <= y && y < y2) || (y2 <= y && y < y1)) {
-        xs.push(x1 + ((y - y1) * (x2 - x1)) / (y2 - y1));
-      }
-    }
-    if (xs.length >= 2) {
-      const lo = Math.ceil(Math.min(...xs));
-      const hi = Math.floor(Math.max(...xs));
-      for (let x = lo; x <= hi; x++) setPixel(x, y, c);
+// One glyph at scale s: each bitmap cell becomes an s-by-s block.
+function glyph(ch: string, x: number, y: number, s: number, c: RGB): void {
+  const g = GLYPHS[ch];
+  if (!g) return;
+  for (let r = 0; r < 7; r++) {
+    for (let col = 0; col < 5; col++) {
+      if (g[r][col] === '1') rect(x + col * s, y + r * s, s, s, c);
     }
   }
 }
 
-// ---- text: draw one glyph scaled, then words, then wrapped paragraphs
-function drawChar(ch: string, x: number, y: number, s: number, c: RGB): void {
-  const g = FONT[ch];
-  if (!g) return;
-  for (let r = 0; r < 7; r++) {
-    for (let col = 0; col < 5; col++) {
-      if (g[r][col] === '1') fillRect(x + col * s, y + r * s, s, s, c);
-    }
+// A glyph cell is 6 units wide (5 bitmap + 1 gap), so a string of n
+// characters spans n * 6 * s - s pixels.
+function textW(s: string, scale: number): number {
+  return s.length * 6 * scale - scale;
+}
+
+function text(s: string, x: number, y: number, scale: number, c: RGB): void {
+  const upper = s.toUpperCase();
+  for (let i = 0; i < upper.length; i++) {
+    glyph(upper[i], x + i * 6 * scale, y, scale, c);
   }
 }
-function textWidth(text: string, s: number): number {
-  return text.length * 6 * s - s;
+
+function centre(s: string, cx: number, y: number, scale: number, c: RGB): void {
+  text(s, cx - Math.floor(textW(s, scale) / 2), y, scale, c);
 }
-function drawText(text: string, x: number, y: number, s: number, c: RGB): void {
-  const upper = text.toUpperCase();
-  for (let i = 0; i < upper.length; i++) drawChar(upper[i], x + i * 6 * s, y, s, c);
-}
-function drawCentred(text: string, cx: number, y: number, s: number, c: RGB): void {
-  drawText(text, cx - Math.floor(textWidth(text, s) / 2), y, s, c);
-}
-// Greedy word wrap on whole words; a word longer than the width is split.
-function wrapText(text: string, maxW: number, s: number): string[] {
-  const words = text.split(' ');
+
+// Greedy wrap on whole words. A single word wider than the column is
+// split across lines instead of overflowing.
+function wrap(s: string, maxW: number, scale: number): string[] {
+  const words = s.split(' ');
   const lines: string[] = [];
   let cur = '';
   for (const w of words) {
     const trial = cur ? cur + ' ' + w : w;
-    if (textWidth(trial, s) <= maxW) { cur = trial; continue; }
+    if (textW(trial, scale) <= maxW) {
+      cur = trial;
+      continue;
+    }
     if (cur) lines.push(cur);
-    if (textWidth(w, s) > maxW) {
+    if (textW(w, scale) > maxW) {
       let part = '';
       for (const ch of w) {
-        if (textWidth(part + ch, s) > maxW) { lines.push(part); part = ch; }
-        else part += ch;
+        if (textW(part + ch, scale) > maxW) {
+          lines.push(part);
+          part = ch;
+        } else {
+          part += ch;
+        }
       }
       cur = part;
-    } else cur = w;
+    } else {
+      cur = w;
+    }
   }
   if (cur) lines.push(cur);
   return lines;
 }
 
-// ---- PNG encoder: 8-bit RGB, one deflate stream, filter 0 per scanline
-const CRC_TABLE: number[] = [];
+// ---------------------------------------------------------------- PNG writer
+// 8-bit RGB, one deflate stream, filter byte 0 on every scanline. The
+// deflate output is deterministic for fixed input, so identical pixels
+// always produce identical files.
+const CRC: number[] = [];
 for (let n = 0; n < 256; n++) {
   let c = n;
   for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-  CRC_TABLE[n] = c >>> 0;
+  CRC[n] = c >>> 0;
 }
+
 function crc32(buf: Buffer): number {
   let c = 0xffffffff;
-  for (const b of buf) c = CRC_TABLE[(c ^ b) & 0xff] ^ (c >>> 8);
+  for (const b of buf) c = CRC[(c ^ b) & 0xff] ^ (c >>> 8);
   return (c ^ 0xffffffff) >>> 0;
 }
-function pngChunk(type: string, data: Buffer): Buffer {
+
+function chunk(kind: string, data: Buffer): Buffer {
   const len = Buffer.alloc(4);
   len.writeUInt32BE(data.length, 0);
-  const body = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+  const body = Buffer.concat([Buffer.from(kind, 'ascii'), data]);
   const crc = Buffer.alloc(4);
   crc.writeUInt32BE(crc32(body), 0);
   return Buffer.concat([len, body, crc]);
 }
-function encodePng(): Buffer {
+
+function toPng(): Buffer {
   const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(W, 0);
-  ihdr.writeUInt32BE(H, 4);
+  ihdr.writeUInt32BE(WIDTH, 0);
+  ihdr.writeUInt32BE(HEIGHT, 4);
   ihdr[8] = 8; // bit depth
-  ihdr[9] = 2; // colour type RGB
-  ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
-  const raw = Buffer.alloc(H * (1 + W * 3));
-  for (let y = 0; y < H; y++) {
-    raw[y * (1 + W * 3)] = 0;
-    raw.set(px.subarray(y * W * 3, (y + 1) * W * 3), y * (1 + W * 3) + 1);
+  ihdr[9] = 2; // colour type: RGB
+  ihdr[10] = 0; // compression
+  ihdr[11] = 0; // filter
+  ihdr[12] = 0; // interlace
+  const raw = Buffer.alloc(HEIGHT * (1 + WIDTH * 3));
+  for (let y = 0; y < HEIGHT; y++) {
+    raw[y * (1 + WIDTH * 3)] = 0; // filter 0: no filtering
+    raw.set(fb.subarray(y * WIDTH * 3, (y + 1) * WIDTH * 3), y * (1 + WIDTH * 3) + 1);
   }
   const idat = deflateSync(raw, { level: 9 });
   const sig = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-  return Buffer.concat([sig, pngChunk('IHDR', ihdr), pngChunk('IDAT', idat), pngChunk('IEND', Buffer.alloc(0))]);
+  return Buffer.concat([sig, chunk('IHDR', ihdr), chunk('IDAT', idat), chunk('IEND', Buffer.alloc(0))]);
 }
 
-// ---- the day's stories, each with its beat colour and a small pictogram
+// ---------------------------------------------------------------- the stories
 interface Story {
   kicker: string;
   headline: string;
@@ -225,6 +269,7 @@ interface Story {
   colour: RGB;
   icon: string;
 }
+
 const STORIES: Story[] = [
   {
     kicker: 'GULF - STRAIT OF HORMUZ',
@@ -237,7 +282,7 @@ const STORIES: Story[] = [
     kicker: 'SPAIN - IBIZA',
     headline: 'DIESEL TANKER SINKS OFF IBIZA, ONE DEAD',
     body: 'A tanker carrying up to 7,000 tonnes of diesel capsizes and sinks off Ibiza. One crew member is dead and a slick spreads.',
-    colour: NAVY_LIGHT,
+    colour: NAVY2,
     icon: 'ship',
   },
   {
@@ -270,95 +315,93 @@ const STORIES: Story[] = [
   },
 ];
 
-// One small white pictogram inside the coloured kicker band, top right.
-function drawIcon(kind: string, x: number, y: number): void {
+// ------------------------------------------------------- pictograms (36 x 30)
+// One small white pictogram per story, drawn top right inside the coloured
+// kicker band. Each is built from the same rect / disc / triangle helpers.
+function icon(kind: string, x: number, y: number): void {
   const w: RGB = WHITE;
-  if (kind === 'bars') {
-    fillRect(x + 2, y + 18, 8, 12, w);
-    fillRect(x + 14, y + 10, 8, 20, w);
-    fillRect(x + 26, y + 2, 8, 28, w);
+  if (kind === 'flame') {
+    tri(x + 18, y + 1, x + 4, y + 22, x + 32, y + 22, w);
+    tri(x + 18, y + 12, x + 10, y + 29, x + 26, y + 29, GOLD);
+  } else if (kind === 'ship') {
+    rect(x + 15, y + 2, 6, 12, w);
+    tri(x + 18, y + 2, x + 6, y + 14, x + 30, y + 14, w);
+    rect(x + 2, y + 16, 32, 6, w);
+    rect(x + 2, y + 25, 32, 3, w);
+    rect(x + 8, y + 29, 20, 2, w);
   } else if (kind === 'burst') {
-    fillCircle(x + 18, y + 15, 6, w);
+    disc(x + 18, y + 15, 6, w);
     for (let i = 0; i < 8; i++) {
       const a = (i * Math.PI) / 4;
       const x1 = x + 18 + Math.round(Math.cos(a) * 9);
       const y1 = y + 15 + Math.round(Math.sin(a) * 9);
       const x2 = x + 18 + Math.round(Math.cos(a) * 15);
       const y2 = y + 15 + Math.round(Math.sin(a) * 15);
-      fillRect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1) + 3, Math.abs(y2 - y1) + 3, w);
+      rect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1) + 3, Math.abs(y2 - y1) + 3, w);
     }
   } else if (kind === 'alert') {
-    fillTriangle(x + 18, y + 1, x + 2, y + 29, x + 34, y + 29, w);
-    fillRect(x + 16, y + 10, 4, 11, NAVY);
-    fillRect(x + 16, y + 24, 4, 4, NAVY);
-  } else if (kind === 'atom') {
-    ring(x + 18, y + 15, 6, 3, w);
-    ring(x + 18, y + 15, 13, 3, w);
-    fillCircle(x + 18, y + 15, 3, w);
-  } else if (kind === 'flame') {
-    fillTriangle(x + 18, y + 1, x + 4, y + 22, x + 32, y + 22, w);
-    fillTriangle(x + 18, y + 12, x + 10, y + 29, x + 26, y + 29, GOLD);
-  } else if (kind === 'truck') {
-    fillRect(x + 1, y + 8, 22, 13, w);
-    fillRect(x + 24, y + 12, 11, 9, w);
-    fillCircle(x + 9, y + 24, 4, w);
-    fillCircle(x + 28, y + 24, 4, w);
-  } else if (kind === 'ship') {
-    fillRect(x + 15, y + 2, 6, 12, w);
-    fillTriangle(x + 18, y + 2, x + 6, y + 14, x + 30, y + 14, w);
-    fillRect(x + 2, y + 16, 32, 6, w);
-    fillRect(x + 2, y + 25, 32, 3, w);
-    fillRect(x + 8, y + 29, 20, 2, w);
+    tri(x + 18, y + 1, x + 2, y + 29, x + 34, y + 29, w);
+    rect(x + 16, y + 10, 4, 11, NAVY);
+    rect(x + 16, y + 24, 4, 4, NAVY);
   } else if (kind === 'storm') {
-    fillRect(x + 6, y + 4, 24, 12, w);
-    fillRect(x + 2, y + 8, 32, 8, w);
-    fillTriangle(x + 20, y + 16, x + 12, y + 29, x + 20, y + 29, w);
-    fillTriangle(x + 26, y + 16, x + 18, y + 29, x + 26, y + 29, GOLD);
+    rect(x + 6, y + 4, 24, 12, w);
+    rect(x + 2, y + 8, 32, 8, w);
+    tri(x + 20, y + 16, x + 12, y + 29, x + 20, y + 29, w);
+    tri(x + 26, y + 16, x + 18, y + 29, x + 26, y + 29, GOLD);
   } else if (kind === 'satellite') {
-    fillRect(x + 14, y + 12, 8, 8, w);
-    fillRect(x + 2, y + 8, 10, 6, w);
-    fillRect(x + 24, y + 8, 10, 6, w);
-    fillRect(x + 2, y + 18, 10, 6, w);
-    fillRect(x + 24, y + 18, 10, 6, w);
-    fillRect(x + 12, y + 14, 12, 4, w);
-    fillRect(x + 16, y + 20, 4, 9, w);
+    rect(x + 14, y + 12, 8, 8, w);
+    rect(x + 2, y + 8, 10, 6, w);
+    rect(x + 24, y + 8, 10, 6, w);
+    rect(x + 2, y + 18, 10, 6, w);
+    rect(x + 24, y + 18, 10, 6, w);
+    rect(x + 12, y + 14, 12, 4, w);
+    rect(x + 16, y + 20, 4, 9, w);
   }
 }
 
-function drawStory(s: Story, x: number, y: number, w: number, h: number): void {
-  fillRect(x, y, w, h, WHITE);
-  fillRect(x, y, w, h, WHITE);
-  // border
-  fillRect(x, y, w, 2, LINE); fillRect(x, y + h - 2, w, 2, LINE);
-  fillRect(x, y, 2, h, LINE); fillRect(x + w - 2, y, 2, h, LINE);
-  // kicker band with pictogram
-  fillRect(x + 2, y + 2, w - 4, 40, s.colour);
-  drawText(s.kicker, x + 14, y + 14, 2, WHITE);
-  drawIcon(s.icon, x + w - 52, y + 7);
-  // headline, up to 3 lines
-  const headLines = wrapText(s.headline, w - 28, 3).slice(0, 3);
+// ------------------------------------------------------------ story card layout
+function card(s: Story, x: number, y: number, w: number, h: number): void {
+  rect(x, y, w, h, WHITE);
+  // Thin ruled border.
+  rect(x, y, w, 2, RULE);
+  rect(x, y + h - 2, w, 2, RULE);
+  rect(x, y, 2, h, RULE);
+  rect(x + w - 2, y, 2, h, RULE);
+  // Coloured kicker band with the pictogram at its right end.
+  rect(x + 2, y + 2, w - 4, 40, s.colour);
+  text(s.kicker, x + 14, y + 14, 2, WHITE);
+  icon(s.icon, x + w - 52, y + 7);
+  // Headline, at most three lines at scale 3.
+  const heads = wrap(s.headline, w - 28, 3).slice(0, 3);
   let cy = y + 56;
-  for (const ln of headLines) { drawText(ln, x + 14, cy, 3, INK); cy += 26; }
-  fillRect(x + 14, cy + 2, w - 28, 2, s.colour);
-  // body, up to 4 lines
-  const bodyLines = wrapText(s.body, w - 28, 2).slice(0, 4);
+  for (const ln of heads) {
+    text(ln, x + 14, cy, 3, INK);
+    cy += 26;
+  }
+  // Accent rule under the headline.
+  rect(x + 14, cy + 2, w - 28, 2, s.colour);
+  // Body, at most four lines at scale 2.
+  const bodys = wrap(s.body, w - 28, 2).slice(0, 4);
   let by = cy + 12;
-  for (const ln of bodyLines) { drawText(ln, x + 14, by, 2, GREY); by += 19; }
+  for (const ln of bodys) {
+    text(ln, x + 14, by, 2, GREY);
+    by += 19;
+  }
 }
 
-function drawPage(): void {
-  fillRect(0, 0, W, H, PAPER);
-  // masthead
-  fillRect(0, 0, W, 148, NAVY);
-  fillRect(0, 148, W, 6, RED);
-  drawCentred('WORLD NEWS', W / 2, 22, 8, WHITE);
-  drawCentred('FRIDAY 27 NOVEMBER 2026', W / 2, 92, 4, GOLD);
-  drawText('THE DAY IN SIX STORIES', 24, 122, 2, WHITE);
-  drawText('ALL TIMES LOCAL', W - 24 - textWidth('ALL TIMES LOCAL', 2), 122, 2, WHITE);
-  // standfirst
-  const stand = 'TANKERS HIT IN HORMUZ, STORM OVER THANKSGIVING, AND A MILLION SATELLITES';
-  drawCentred(stand, W / 2, 168, 2, INK);
-  // six stories in a 2 by 3 grid
+// ---------------------------------------------------------------- the page
+function paint(): void {
+  rect(0, 0, WIDTH, HEIGHT, PAPER);
+  // Masthead: navy block, red rule, big title, gold date line.
+  rect(0, 0, WIDTH, 148, NAVY);
+  rect(0, 148, WIDTH, 6, RED);
+  centre('WORLD NEWS', WIDTH / 2, 22, 8, WHITE);
+  centre('FRIDAY 27 NOVEMBER 2026', WIDTH / 2, 92, 4, GOLD);
+  text('THE DAY IN SIX STORIES', 24, 122, 2, WHITE);
+  text('ALL TIMES LOCAL', WIDTH - 24 - textW('ALL TIMES LOCAL', 2), 122, 2, WHITE);
+  // Standfirst: the three biggest threads of the day in one line.
+  centre('TANKERS HIT IN HORMUZ, STORM OVER THANKSGIVING, AND A MILLION SATELLITES', WIDTH / 2, 168, 2, INK);
+  // Six stories in a 2-by-3 grid.
   const gx = 24;
   const gy = 198;
   const cw = 476;
@@ -367,23 +410,28 @@ function drawPage(): void {
   for (let i = 0; i < STORIES.length; i++) {
     const col = i % 2;
     const row = Math.floor(i / 2);
-    drawStory(STORIES[i], gx + col * (cw + gap), gy + row * (ch + gap), cw, ch);
+    card(STORIES[i], gx + col * (cw + gap), gy + row * (ch + gap), cw, ch);
   }
-  // footer briefs
+  // Footer briefs: three more stories in two lines, then the source line.
   const fy = 942;
-  fillRect(24, fy, W - 48, 2, INK);
-  const briefs = 'ALSO: ALL HOSTAGES FREED AFTER 16-HOUR SIEGE IN COLOMBIA. UK NET MIGRATION AT NEAR 30-YEAR LOW. EU SPLIT OVER 49 BILLION UKRAINE LOAN.';
-  const lines = wrapText(briefs, W - 48, 2);
+  rect(24, fy, WIDTH - 48, 2, INK);
+  const briefs =
+    'ALSO: ALL HOSTAGES FREED AFTER 16-HOUR SIEGE IN COLOMBIA. UK NET MIGRATION AT NEAR 30-YEAR LOW. EU SPLIT OVER 49 BILLION UKRAINE LOAN.';
+  const lines = wrap(briefs, WIDTH - 48, 2);
   let ly = fy + 12;
-  for (const ln of lines.slice(0, 2)) { drawText(ln, 24, ly, 2, GREY); ly += 19; }
-  drawCentred('REPORTED ON 27 NOVEMBER 2026 - SOURCES: NEWS WIRES AND BROADCAST REPORTS', W / 2, 1000, 1, GREY);
+  for (const ln of lines.slice(0, 2)) {
+    text(ln, 24, ly, 2, GREY);
+    ly += 19;
+  }
+  centre('REPORTED ON 27 NOVEMBER 2026 - SOURCES: NEWS WIRES AND BROADCAST REPORTS', WIDTH / 2, 1000, 1, GREY);
 }
 
+// ---------------------------------------------------------------------- main
 function main(): void {
-  drawPage();
+  paint();
   const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
   mkdirSync(outDir, { recursive: true });
-  writeFileSync(join(outDir, 'entry.png'), encodePng());
+  writeFileSync(join(outDir, 'entry.png'), toPng());
 }
 
 main();
